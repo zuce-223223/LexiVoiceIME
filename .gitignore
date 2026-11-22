@@ -1,0 +1,11 @@
+*.aar
+*.apk
+app/src/main/assets/sense-voice/model*.onnx
+app/src/main/assets/sense-voice/tokens.txt
+.gradle/
+build/
+app/build/
+.idea/
+local.properties
+gradlew
+gradle/wrapper/gradle-wrapper.jar

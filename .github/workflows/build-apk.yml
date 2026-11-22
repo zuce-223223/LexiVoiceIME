@@ -1,0 +1,58 @@
+name: Build Debug APK
+
+on:
+  push:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: gradle
+
+      - name: Verify project directories
+        run: |
+          mkdir -p app/libs
+          mkdir -p app/src/main/assets/sense-voice
+          ls -la app/libs app/src/main/assets/sense-voice
+
+      - name: Download Sherpa-ONNX 1.12.29 Android AAR
+        run: |
+          curl -L --fail -o app/libs/sherpa-onnx-1.12.29.aar \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.29/sherpa-onnx-1.12.29.aar
+
+      - name: Download SenseVoice INT8 offline model
+        run: |
+          curl -L --fail -o sense-voice.tar.bz2 \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2
+          tar -xjf sense-voice.tar.bz2
+          cp sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09/model.int8.onnx app/src/main/assets/sense-voice/
+          cp sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09/tokens.txt app/src/main/assets/sense-voice/
+          rm -rf sense-voice.tar.bz2 sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09
+
+      - name: Setup Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build Debug APK
+        run: gradle assembleDebug --stacktrace --no-daemon
+
+      - name: Verify APK output path
+        run: ls -lh app/build/outputs/apk/debug/
+
+      - name: Upload Debug APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LexiVoiceIME-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LexiVoiceIME</string>
+    <string name="ime_label">LexiVoiceIME 语音输入法</string>
+    <string name="btn_grant_audio">申请录音权限</string>
+    <string name="btn_open_ime_settings">打开系统输入法设置</string>
+    <string name="btn_switch_ime">切换输入法</string>
+    <string name="btn_start_voice">开始语音输入</string>
+    <string name="btn_stop_voice">停止并上屏</string>
+    <string name="btn_space">空格</string>
+    <string name="btn_backspace">退格</string>
+    <string name="btn_enter">换行</string>
+    <string name="status_recognizing">正在处理音频...</string>
+</resources>
