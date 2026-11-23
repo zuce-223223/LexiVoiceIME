@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">LexiVoiceIME</string>
-    <string name="ime_label">LexiVoice 输入法</string>
+    <string name="app_name">声墨输入法</string>
+    <string name="ime_label">声墨输入法</string>
 
     <!-- 主界面 -->
     <string name="btn_grant_audio">申请录音权限</string>

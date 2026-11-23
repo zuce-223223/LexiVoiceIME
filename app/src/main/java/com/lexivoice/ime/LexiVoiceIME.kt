@@ -1,5 +1,7 @@
 package com.lexivoice.ime
 
+import android.content.ClipboardManager
+import android.content.Context
 import android.inputmethodservice.InputMethodService
 import android.view.KeyEvent
 import android.view.View
@@ -17,6 +19,7 @@ class LexiVoiceIME : InputMethodService() {
     private lateinit var voiceManager: VoiceRecognitionManager
     private var handwriteRecognizer: HCCRRecognizer? = null
     private var keyboardPanel: KeyboardPanel? = null
+    private var clipboardManager: ClipboardManager? = null
 
     private val inputBridge = object : KeyboardPanel.InputBridge {
         override fun commit(text: String) {
@@ -44,6 +47,7 @@ class LexiVoiceIME : InputMethodService() {
         super.onCreate()
         voiceManager = VoiceRecognitionManager(applicationContext)
         loadHandwritingModel()
+        setupClipboardListener()
     }
 
     private fun loadHandwritingModel() {
@@ -56,9 +60,31 @@ class LexiVoiceIME : InputMethodService() {
                     "mbv2_aug.int8.ncnn.bin",
                     "charset.json"
                 )
-                withContext(Dispatchers.Main) { handwriteRecognizer = rec }
+                withContext(Dispatchers.Main) {
+                    handwriteRecognizer = rec
+                    keyboardPanel?.updateRecognizer(rec)
+                }
             } catch (e: Exception) {
                 android.util.Log.w("LexiVoiceIME", "手写模型加载失败：${e.message}")
+            }
+        }
+    }
+
+    /**
+     * 剪贴板监听：默认输入法拥有系统剪贴板读取权限（Android 10+ 仅豁免默认 IME）。
+     * 用户在任意应用复制文字时记录到键盘剪贴板面板。
+     */
+    private fun setupClipboardListener() {
+        clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+        clipboardManager?.addPrimaryClipChangedListener {
+            try {
+                val clip = clipboardManager?.primaryClip ?: return@addPrimaryClipChangedListener
+                if (clip.itemCount > 0) {
+                    val text = clip.getItemAt(0)?.coerceToText(this)?.toString() ?: return@addPrimaryClipChangedListener
+                    keyboardPanel?.pushClipboardEntry(text)
+                }
+            } catch (_: Exception) {
+                // Android 10+ 非默认 IME 或后台限制时静默忽略
             }
         }
     }
@@ -75,6 +101,7 @@ class LexiVoiceIME : InputMethodService() {
             handwriteRecognizer?.close()
         } catch (_: Exception) {
         }
+        clipboardManager?.removePrimaryClipChangedListener { }
         serviceScope.cancel()
         super.onDestroy()
     }
