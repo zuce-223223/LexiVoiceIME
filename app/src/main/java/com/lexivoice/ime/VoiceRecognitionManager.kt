@@ -153,7 +153,8 @@ class VoiceRecognitionManager(private val context: Context) {
                 try {
                     stream.acceptWaveform(floats, SAMPLE_RATE)
                     rec.decode(stream)
-                    val text = rec.getResult(stream).text.trim()
+                    // 自动标点 + 去除重复语气词
+                    val text = SpeechTextPolisher.polish(rec.getResult(stream).text)
                     withContext(Dispatchers.Main) {
                         onStatusChanged(if (text.isEmpty()) "识别完成，未得到文字" else "识别完成")
                     }

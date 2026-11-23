@@ -67,12 +67,22 @@ class LexiVoiceIME : InputMethodService() {
         serviceScope.launch(Dispatchers.IO) {
             try {
                 HCCRRecognizer.loadNativeLibrary("hccr_jni")
-                val rec = HCCRRecognizer(
-                    assets,
-                    "mbv2_aug.int8.ncnn.param",
-                    "mbv2_aug.int8.ncnn.bin",
-                    "charset.json"
+                // 优先 FP32 大模型（无量化精度损失），失败时回退 INT8 小模型
+                val candidates = listOf(
+                    "mbv2_fp32.ncnn.param" to "mbv2_fp32.ncnn.bin",
+                    "mbv2_aug.int8.ncnn.param" to "mbv2_aug.int8.ncnn.bin"
                 )
+                var loaded: HCCRRecognizer? = null
+                for ((param, bin) in candidates) {
+                    try {
+                        loaded = HCCRRecognizer(assets, param, bin, "charset.json")
+                        android.util.Log.i("LexiVoiceIME", "手写模型已加载: $param")
+                        break
+                    } catch (e: Exception) {
+                        android.util.Log.w("LexiVoiceIME", "手写模型 $param 加载失败: ${e.message}")
+                    }
+                }
+                val rec = loaded ?: error("全部手写模型加载失败")
                 withContext(Dispatchers.Main) {
                     handwriteRecognizer = rec
                     keyboardPanel?.updateRecognizer(rec)

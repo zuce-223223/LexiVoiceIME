@@ -16,11 +16,12 @@ import com.shiyu.handwritten.runtime.HCCRRecognizer
 import kotlin.math.max
 
 /**
- * 手写汉字画布（Gboard 风格）：
- * - 连笔书写：多笔画叠加，停顿 autoDelayMs 后自动识别；
- * - 再次落笔时自动把上次候选首选上屏并清屏，实现连续输入；
- * - 修复旧版识别图边界框只取最后一笔的 bug（现取全部笔迹联合边界）；
- * - 笔迹粗细与识别停顿时间可由外部调节（设置面板）。
+ * 手写汉字画布（Gboard 风格，v4）：
+ * - 连笔书写，抬笔停顿后自动识别；
+ * - 再次落笔自动消费上次候选并清屏，实现连续输入；
+ * - 全部笔迹联合边界框，修复多笔画缩放错位；
+ * - 抬笔跳点不再强制连线、多指/跳变不产生无关笔画（首笔粘连修复）；
+ * - 识别图线宽按缩放比反算，细至约 2.6px/64px，匹配模型训练笔迹。
  */
 class HandwritingView @JvmOverloads constructor(
     context: Context,
@@ -29,28 +30,40 @@ class HandwritingView @JvmOverloads constructor(
 
     var recognizer: HCCRRecognizer? = null
     var onResult: ((List<String>) -> Unit)? = null
+    var onAutoCommitPending: (() -> Unit)? = null
 
-    /** 本次停顿后自动识别的延时（毫秒），对应“书写速度”：越小越快触发识别。 */
-    var autoRecognizeDelayMs: Long = 600L
+    /** 停顿多久后识别（毫秒），对应“书写速度”，可调 300–3300ms。 */
+    var autoRecognizeDelayMs: Long = 1200L
 
-    /** 屏幕显示笔迹粗细（px），识别图始终使用模型最优的固定线宽。 */
-    var displayStrokeWidth: Float = 14f
+    /** 屏幕显示笔迹粗细（px）；识别图使用独立细笔迹。 */
+    var displayStrokeWidth: Float = 8f
+
+    /** 返回候选数量（首选自动上屏，其余展示）。 */
+    var candidateCount: Int = 9
 
     private val strokePaint = Paint().apply {
         color = Color.parseColor("#1A1C1E")
         style = Paint.Style.STROKE
-        strokeWidth = 14f
+        strokeWidth = 8f
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
         isAntiAlias = true
     }
+
     private val paths = mutableListOf<Path>()
     private var currentPath: Path? = null
-    private var currentStrokeId = 0L
+    private var activePointerId = -1
+    private var lastX = -1f
+    private var lastY = -1f
+
+    /** 坐标跳变超过该距离时断笔，不再连出长直线（抬笔跳点/首笔粘连主因）。 */
+    private val jumpLimit: Float
+        get() = 90f * resources.displayMetrics.density
 
     private val handler = Handler(Looper.getMainLooper())
     private var pendingRecognize = false
     private var lastUpTime = 0L
+    private var lastCandidates: List<String> = emptyList()
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -61,36 +74,51 @@ class HandwritingView @JvmOverloads constructor(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                // 再次落笔：若上一次识别结果尚未被消费，触发“连续书写自动上屏”
+                // 上一字的结果尚未消费：自动确认并清屏，避免与本次落笔粘连
                 if (pendingRecognize) {
                     pendingRecognize = false
                     handler.removeCallbacksAndMessages(null)
                     flushPendingResult()
                 }
-                currentStrokeId = System.currentTimeMillis()
-                currentPath = Path().apply { moveTo(event.x, event.y) }
+                activePointerId = event.getPointerId(0)
+                val x = event.getX(0)
+                val y = event.getY(0)
+                currentPath = Path().apply { moveTo(x, y) }
                 paths.add(currentPath!!)
+                lastX = x
+                lastY = y
                 invalidate()
                 return true
             }
+            // 第二根手指不建新路径，避免无关笔画
+            MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> return true
             MotionEvent.ACTION_MOVE -> {
-                // 记录历史点使曲线更平滑
+                val idx = event.findPointerIndex(activePointerId)
+                if (idx < 0) return true
                 for (i in 0 until event.historySize) {
-                    currentPath?.lineTo(event.getHistoricalX(i), event.getHistoricalY(i))
+                    appendPoint(event.getHistoricalX(idx, i), event.getHistoricalY(idx, i))
                 }
-                currentPath?.lineTo(event.x, event.y)
+                appendPoint(event.getX(idx), event.getY(idx))
                 invalidate()
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                currentPath?.lineTo(event.x, event.y)
+                val idx = event.findPointerIndex(activePointerId)
+                if (idx >= 0) {
+                    for (i in 0 until event.historySize) {
+                        appendPoint(event.getHistoricalX(idx, i), event.getHistoricalY(idx, i))
+                    }
+                }
+                // 关键：不再把 UP 坐标强行连线（抬笔跳点会画出一道无关长线）
                 currentPath = null
+                activePointerId = -1
+                lastX = -1f
+                lastY = -1f
                 lastUpTime = System.currentTimeMillis()
                 invalidate()
-                // 抬笔后延迟自动识别：连笔书写时不会中途误识别
                 handler.removeCallbacksAndMessages(null)
                 handler.postDelayed({
-                    if (System.currentTimeMillis() - lastUpTime >= autoRecognizeDelayMs - 80) {
+                    if (System.currentTimeMillis() - lastUpTime >= autoRecognizeDelayMs - 120) {
                         pendingRecognize = true
                         recognize()
                     }
@@ -101,18 +129,29 @@ class HandwritingView @JvmOverloads constructor(
         return super.onTouchEvent(event)
     }
 
-    /** 连续书写时自动消费上次结果：交由外部决定上屏内容。 */
-    var onAutoCommitPending: (() -> Unit)? = null
-    private var lastCandidates: List<String> = emptyList()
+    private fun appendPoint(x: Float, y: Float) {
+        val path = currentPath ?: return
+        if (lastX >= 0f) {
+            val dx = x - lastX
+            val dy = y - lastY
+            if (dx * dx + dy * dy > jumpLimit * jumpLimit) {
+                path.moveTo(x, y) // 断笔，不连出长线
+            } else {
+                path.lineTo(x, y)
+            }
+        } else {
+            path.moveTo(x, y)
+        }
+        lastX = x
+        lastY = y
+    }
 
     private fun flushPendingResult() {
-        if (lastCandidates.isNotEmpty()) {
-            onAutoCommitPending?.invoke()
-        }
+        if (lastCandidates.isNotEmpty()) onAutoCommitPending?.invoke()
         clear()
     }
 
-    /** 手动触发识别（设置面板/工具行“识别”按钮）。 */
+    /** 手动识别（工具行“识别”按钮）。 */
     fun recognizeNow() {
         handler.removeCallbacksAndMessages(null)
         if (paths.isEmpty()) return
@@ -125,7 +164,7 @@ class HandwritingView @JvmOverloads constructor(
         val rec = recognizer ?: return
         if (paths.isEmpty()) return
 
-        // 全部笔迹联合边界框（修复旧版只取最后一笔的 bug）
+        // 全部笔迹的联合边界框
         val union = RectF()
         val tmp = RectF()
         var hasContent = false
@@ -137,7 +176,6 @@ class HandwritingView @JvmOverloads constructor(
         }
         if (!hasContent) return
 
-        // 渲染到 64x64 白底黑字灰度图，等比缩放居中
         val size = 64
         val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
@@ -149,8 +187,9 @@ class HandwritingView @JvmOverloads constructor(
         val offsetX = (size - w * scale) / 2f - union.left * scale
         val offsetY = (size - h * scale) / 2f - union.top * scale
 
+        // 识别图使用细笔迹：缩放后约 2.6px/64px（旧版 6px 过粗，识别率下降）
         val renderPaint = Paint(strokePaint).apply {
-            strokeWidth = 6f
+            strokeWidth = (2.6f / scale).coerceIn(1f, 20f)
             color = Color.BLACK
         }
         c.save()
@@ -163,33 +202,41 @@ class HandwritingView @JvmOverloads constructor(
         val pixels = IntArray(size * size)
         bmp.getPixels(pixels, 0, size, 0, 0, size, size)
         for (i in pixels.indices) {
-            val r = Color.red(pixels[i])
-            val g = Color.green(pixels[i])
-            val b = Color.blue(pixels[i])
-            gray[i] = ((r + g + b) / 3 and 0xFF).toByte()
+            val v = pixels[i]
+            gray[i] = (((Color.red(v) + Color.green(v) + Color.blue(v)) / 3) and 0xFF).toByte()
         }
         bmp.recycle()
 
         val floatInput = FloatArray(size * size)
-        val ok = rec.preprocess(gray, size, size, floatInput)
-        if (!ok) return
-        val results = rec.predict(floatInput, 5)
+        if (!rec.preprocess(gray, size, size, floatInput)) return
+        val results = rec.predict(floatInput, candidateCount)
+        if (results.isEmpty()) return
         lastCandidates = results.map { it.text }
         onResult?.invoke(lastCandidates)
     }
 
-    /** 应用笔迹粗细设置并重绘。 */
     fun applyStrokeWidth(widthPx: Float) {
         displayStrokeWidth = widthPx
         strokePaint.strokeWidth = widthPx
         invalidate()
     }
 
-    /** 识别完成后清屏（候选已上屏/展示）。 */
+    /** 清屏但保留候选状态（供下次落笔自动确认）。 */
     fun clear() {
         paths.clear()
         currentPath = null
+        activePointerId = -1
+        lastX = -1f
+        lastY = -1f
         invalidate()
+    }
+
+    /** 进入/退出手写模式时彻底复位，避免残留笔迹与待处理候选。 */
+    fun reset() {
+        handler.removeCallbacksAndMessages(null)
+        clear()
+        lastCandidates = emptyList()
+        pendingRecognize = false
     }
 
     fun hasStrokes(): Boolean = paths.isNotEmpty()
