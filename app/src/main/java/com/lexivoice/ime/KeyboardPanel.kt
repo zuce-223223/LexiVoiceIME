@@ -115,6 +115,19 @@ class KeyboardPanel(
         topRow.addView(btnClipboard)
         addView(topRow)
 
+        // ===== 手写候选条：紧贴状态栏，保证设置面板展开时仍可见 =====
+        candidateStrip = HorizontalScrollView(context).apply {
+            visibility = GONE
+            setBackgroundColor(Color.parseColor("#E8F5E9"))
+            isHorizontalScrollBarEnabled = false
+        }
+        candidateList = LinearLayout(context).apply {
+            orientation = HORIZONTAL
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+        }
+        candidateStrip.addView(candidateList)
+        addView(candidateStrip)
+
         // ===== 设置行（默认隐藏） =====
         settingsRow = LinearLayout(context).apply {
             orientation = VERTICAL
@@ -148,7 +161,11 @@ class KeyboardPanel(
             minHeight = 0
             minimumHeight = 0
         }
-        btnDoneSettings.setOnClickListener { settingsRow.visibility = GONE }
+        btnDoneSettings.setOnClickListener {
+            settingsRow.visibility = GONE
+            // 设置面板很高，展开时临时隐藏画布；关闭后恢复，保证候选条始终在可视区
+            if (mode == Mode.HANDWRITE) handwriteView.visibility = VISIBLE
+        }
         strokeSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, v: Int, fromUser: Boolean) {
                 val px = (v + 1) * resources.displayMetrics.density
@@ -194,19 +211,6 @@ class KeyboardPanel(
         }
         addView(rowsContainer)
 
-        // ===== 手写候选条（默认隐藏） =====
-        candidateStrip = HorizontalScrollView(context).apply {
-            visibility = GONE
-            setBackgroundColor(Color.parseColor("#E8F5E9"))
-            isHorizontalScrollBarEnabled = false
-        }
-        candidateList = LinearLayout(context).apply {
-            orientation = HORIZONTAL
-            setPadding(dp(8), dp(4), dp(8), dp(4))
-        }
-        candidateStrip.addView(candidateList)
-        addView(candidateStrip)
-
         // ===== 手写工具行（清空/识别/设置，默认隐藏） =====
         handwriteToolRow = LinearLayout(context).apply {
             orientation = HORIZONTAL
@@ -226,7 +230,13 @@ class KeyboardPanel(
             applyHandwriteLayout()
         }
         btnHwSettings.setOnClickListener {
-            settingsRow.visibility = if (settingsRow.visibility == VISIBLE) GONE else VISIBLE
+            if (settingsRow.visibility == VISIBLE) {
+                settingsRow.visibility = GONE
+                if (mode == Mode.HANDWRITE) handwriteView.visibility = VISIBLE
+            } else {
+                settingsRow.visibility = VISIBLE
+                handwriteView.visibility = GONE // 让出高度，避免候选行被挤出屏幕
+            }
         }
         btnHwExit.setOnClickListener { switchMode(Mode.LETTERS) }
         handwriteToolRow.addView(btnHwClear)
@@ -336,9 +346,9 @@ class KeyboardPanel(
         if (!isHand) fullscreenHand = false
         renderKeys()
         applyHandwriteLayout()
-        candidateStrip.visibility = GONE
+        candidateStrip.visibility = if (isHand) VISIBLE else GONE
         settingsRow.visibility = GONE
-        if (!isHand) hideCandidates()
+        if (isHand) showHighFrequencyCandidates() else hideCandidates()
         highlightModeButtons()
         if (isHand) {
             candidateText.text = if (handwriteRecognizer != null)
@@ -479,6 +489,29 @@ class KeyboardPanel(
 
     // ---------------------------------------------------------------- 手写候选
 
+    /** 手写模式下常驻的 8 个高频字，空候选时也能一键上屏。 */
+    private fun showHighFrequencyCandidates() {
+        candidateList.removeAllViews()
+        alternativeCandidates = emptyList()
+        for (ch in listOf("的", "一", "是", "在", "不", "了", "有", "人")) {
+            val btn = candidateButton(ch) { input.commit(ch); previousChar = ch.firstOrNull() }
+            candidateList.addView(btn)
+        }
+        candidateStrip.visibility = VISIBLE
+    }
+
+    private fun candidateButton(text: String, onClick: () -> Unit): Button = Button(context).apply {
+        this.text = text
+        textSize = 18f
+        setTextColor(Color.parseColor("#1A1C1E"))
+        setBackgroundColor(Color.parseColor("#F4FAF5"))
+        minHeight = 0
+        minimumHeight = 0
+        layoutParams = LayoutParams(0, dp(40), 1f) // 8 个等宽平分一行，全部可见无需滚动
+        setPadding(dp(2), 0, dp(2), 0)
+        setOnClickListener { onClick() }
+    }
+
     private fun showCandidates(raw: List<String>) {
         if (raw.isEmpty()) return
         // 常用词共现重排：上一字 + 本候选能组成常用词时优先，近似“按语义联想”
@@ -493,40 +526,33 @@ class KeyboardPanel(
         candidateList.removeAllViews()
         alternativeCandidates = ranked.drop(1).take(8) // 一行 7~8 个
         if (alternativeCandidates.isEmpty()) {
-            candidateStrip.visibility = GONE
+            showHighFrequencyCandidates()
             handwriteView.clear()
             return
         }
         for (cand in alternativeCandidates) {
-            val btn = Button(context).apply {
-                text = cand
-                textSize = 16f
-                setTextColor(Color.parseColor("#1A1C1E"))
-                setBackgroundColor(Color.parseColor("#F4FAF5"))
-                minHeight = 0
-                minimumHeight = 0
-                layoutParams = LayoutParams(LayoutParams.WRAP_CONTENT, dp(38))
-                setPadding(dp(5), 0, dp(5), 0)
-            }
-            btn.setOnClickListener {
+            candidateList.addView(candidateButton(cand) {
                 // 用所选候选替换刚上屏的字
                 repeat(committedCharCount) { input.backspace() }
                 input.commit(cand)
                 committedCharCount = cand.length
                 previousChar = cand.firstOrNull()
-                hideCandidates()
+                showHighFrequencyCandidates()
                 handwriteView.clear()
-            }
-            candidateList.addView(btn)
+            })
         }
         candidateStrip.visibility = VISIBLE
         handwriteView.clear()
     }
 
     private fun hideCandidates() {
-        alternativeCandidates = emptyList()
-        candidateList.removeAllViews()
-        candidateStrip.visibility = GONE
+        if (mode == Mode.HANDWRITE) {
+            showHighFrequencyCandidates() // 手写模式候选行常驻，始终有 8 个字可点
+        } else {
+            alternativeCandidates = emptyList()
+            candidateList.removeAllViews()
+            candidateStrip.visibility = GONE
+        }
     }
 
     // ---------------------------------------------------------------- 剪贴板

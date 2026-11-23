@@ -74,11 +74,15 @@ class HandwritingView @JvmOverloads constructor(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                // 上一字的结果尚未消费：自动确认并清屏，避免与本次落笔粘连
-                if (pendingRecognize) {
+                // 【首笔粘连根治】只要画布上还有旧笔迹，落笔瞬间就同步结算上一字并清屏。
+                // 不能再等 1200ms 定时识别：用户连续书写时旧字会与新字叠加成"无关笔画"。
+                handler.removeCallbacksAndMessages(null)
+                if (paths.isNotEmpty()) {
+                    pendingRecognize = true
+                    recognize() // 同步识别：首选上屏 + 显示候选 + clear()
+                    // 识别失败（模型未就绪等）也必须清屏，绝不让旧笔迹留到新字里
+                    if (paths.isNotEmpty()) clear()
                     pendingRecognize = false
-                    handler.removeCallbacksAndMessages(null)
-                    flushPendingResult()
                 }
                 activePointerId = event.getPointerId(0)
                 val x = event.getX(0)
