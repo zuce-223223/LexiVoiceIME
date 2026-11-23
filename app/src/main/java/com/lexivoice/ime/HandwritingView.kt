@@ -16,12 +16,15 @@ import com.shiyu.handwritten.runtime.HCCRRecognizer
 import kotlin.math.max
 
 /**
- * 手写汉字画布（Gboard 风格，v4）：
+ * 手写汉字画布（Gboard 风格，v7 / A 档快写优化）：
  * - 连笔书写，抬笔停顿后自动识别；
  * - 再次落笔自动消费上次候选并清屏，实现连续输入；
  * - 全部笔迹联合边界框，修复多笔画缩放错位；
  * - 抬笔跳点不再强制连线、多指/跳变不产生无关笔画（首笔粘连修复）；
  * - 识别图线宽按缩放比反算，细至约 2.6px/64px，匹配模型训练笔迹。
+ * - v7：采样点改用二次贝塞尔中点平滑（Gboard 轻量版），快写折线变平滑曲线；
+ *   跨字判断加入落笔位置条件，快速连写时新字不再并入旧字；
+ *   断笔改为"距离大且间隔长"双条件，避免快写时被误断。
  */
 class HandwritingView @JvmOverloads constructor(
     context: Context,
@@ -58,10 +61,19 @@ class HandwritingView @JvmOverloads constructor(
     private var activePointerId = -1
     private var lastX = -1f
     private var lastY = -1f
+    /** 二次贝塞尔平滑：上一个原始采样点作为控制点。 */
+    private var prevX = -1f
+    private var prevY = -1f
+    private var lastPointTime = 0L
 
-    /** 坐标跳变超过该距离时断笔，不再连出长直线（抬笔跳点/首笔粘连主因）。 */
+    /**
+     * 断笔阈值：距离大 **且** 时间间隔长才判为跳点。
+     * 阈值从旧版 90dp 放宽到 220dp，避免快写时相邻采样点距离过大被误断；
+     * 时间条件用来兜住真正的抬笔跳点（首笔粘连修复不被破坏）。
+     */
     private val jumpLimit: Float
-        get() = 90f * resources.displayMetrics.density
+        get() = 220f * resources.displayMetrics.density
+    private val jumpMinGapMs = 20L
 
     private val handler = Handler(Looper.getMainLooper())
     private var pendingRecognize = false
@@ -77,28 +89,30 @@ class HandwritingView @JvmOverloads constructor(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                // 抬笔后 120ms 已给出候选预览；此处按笔间隔判断是"同字续写"还是"新字"
                 handler.removeCallbacksAndMessages(null)
+                val x = event.getX(0)
+                val y = event.getY(0)
                 if (paths.isNotEmpty()) {
                     val gap = System.currentTimeMillis() - lastUpTime
-                    if (lastUpTime > 0 && gap >= autoRecognizeDelayMs) {
-                        // 间隔够长 = 上一字结束：同步结算并清屏，绝不让旧笔迹叠到新字
+                    if (isNewCharacter(x, y, gap)) {
+                        // 上一字结束（间隔够长，或新笔落在旧字右方）：同步结算并清屏
                         pendingRecognize = true
                         recognize(commit = true)
                         if (paths.isNotEmpty()) clear()
                         pendingRecognize = false
                     } else {
-                        // 间隔短 = 同一个字继续写：保留笔迹，仅清掉旧预览候选
+                        // 同一个字继续写：保留笔迹，仅清掉旧预览候选
                         onPreviewDismiss?.invoke()
                     }
                 }
                 activePointerId = event.getPointerId(0)
-                val x = event.getX(0)
-                val y = event.getY(0)
                 currentPath = Path().apply { moveTo(x, y) }
                 paths.add(currentPath!!)
                 lastX = x
                 lastY = y
+                prevX = x
+                prevY = y
+                lastPointTime = event.eventTime
                 invalidate()
                 return true
             }
@@ -108,9 +122,12 @@ class HandwritingView @JvmOverloads constructor(
                 val idx = event.findPointerIndex(activePointerId)
                 if (idx < 0) return true
                 for (i in 0 until event.historySize) {
-                    appendPoint(event.getHistoricalX(idx, i), event.getHistoricalY(idx, i))
+                    appendPoint(
+                        event.getHistoricalX(idx, i), event.getHistoricalY(idx, i),
+                        event.getHistoricalEventTime(idx, i)
+                    )
                 }
-                appendPoint(event.getX(idx), event.getY(idx))
+                appendPoint(event.getX(idx), event.getY(idx), event.eventTime)
                 invalidate()
                 return true
             }
@@ -118,9 +135,14 @@ class HandwritingView @JvmOverloads constructor(
                 val idx = event.findPointerIndex(activePointerId)
                 if (idx >= 0) {
                     for (i in 0 until event.historySize) {
-                        appendPoint(event.getHistoricalX(idx, i), event.getHistoricalY(idx, i))
+                        appendPoint(
+                            event.getHistoricalX(idx, i), event.getHistoricalY(idx, i),
+                            event.getHistoricalEventTime(idx, i)
+                        )
                     }
                 }
+                // 收笔时把最后一个采样点补进平滑曲线，避免末尾一小段丢失
+                finishStroke()
                 // 关键：不再把 UP 坐标强行连线（抬笔跳点会画出一道无关长线）
                 currentPath = null
                 activePointerId = -1
@@ -145,21 +167,71 @@ class HandwritingView @JvmOverloads constructor(
         return super.onTouchEvent(event)
     }
 
-    private fun appendPoint(x: Float, y: Float) {
+    /**
+     * 追加采样点：二次贝塞尔中点平滑（Gboard 思路的轻量版）。
+     * 相邻点之间不再画生硬直线，而是以上一原始点为控制点、两点中点为终点画二次曲线；
+     * 快写采样稀疏时也能得到平滑笔迹，减少折线带来的识别误差。
+     */
+    private fun appendPoint(x: Float, y: Float, timeMs: Long) {
         val path = currentPath ?: return
-        if (lastX >= 0f) {
+        if (prevX < 0f) {
+            path.moveTo(x, y)
+            prevX = x
+            prevY = y
+        } else {
             val dx = x - lastX
             val dy = y - lastY
-            if (dx * dx + dy * dy > jumpLimit * jumpLimit) {
-                path.moveTo(x, y) // 断笔，不连出长线
+            val far = dx * dx + dy * dy > jumpLimit * jumpLimit
+            val slow = timeMs - lastPointTime >= jumpMinGapMs
+            if (far && slow) {
+                // 真正的跳点（距离大且间隔长）：断笔，避免连出无关长线
+                path.moveTo(x, y)
+                prevX = x
+                prevY = y
             } else {
-                path.lineTo(x, y)
+                // 二次贝塞尔：控制点=上一原始点，终点=两点中点
+                val midX = (prevX + x) * 0.5f
+                val midY = (prevY + y) * 0.5f
+                path.quadTo(prevX, prevY, midX, midY)
+                prevX = x
+                prevY = y
             }
-        } else {
-            path.moveTo(x, y)
         }
         lastX = x
         lastY = y
+        lastPointTime = timeMs
+    }
+
+    /** 收笔时补上最后一个原始点，避免中点平滑丢掉笔尖末端。 */
+    private fun finishStroke() {
+        val path = currentPath ?: return
+        if (prevX >= 0f) path.lineTo(prevX, prevY)
+    }
+
+    /**
+     * 新字判定：
+     * - 间隔达到阈值 → 上一字结束（原有逻辑）；
+     * - 快速连写时（间隔 ≥120ms 但 <阈值），若新笔明显落在旧字右方且大致同一行 → 新字。
+     *   这样"一口气写完一个多笔字"（间隔通常 <120ms）不会被误拆，
+     *   而快速连续写多个字时，新字不会并入旧字导致识别全错。
+     */
+    private fun isNewCharacter(x: Float, y: Float, gap: Long): Boolean {
+        if (lastUpTime <= 0L) return false
+        if (gap >= autoRecognizeDelayMs) return true
+        if (gap < 120L) return false
+        val union = RectF()
+        val tmp = RectF()
+        var has = false
+        for (p in paths) {
+            p.computeBounds(tmp, true)
+            if (tmp.isEmpty) continue
+            if (has) union.union(tmp) else union.set(tmp)
+            has = true
+        }
+        if (!has) return false
+        val extra = max(24f * resources.displayMetrics.density, union.width() * 0.2f)
+        val sameLine = y >= union.top - union.height() * 0.3f && y <= union.bottom + union.height() * 0.3f
+        return sameLine && x > union.right + extra
     }
 
     private fun flushPendingResult() {
@@ -244,6 +316,9 @@ class HandwritingView @JvmOverloads constructor(
         activePointerId = -1
         lastX = -1f
         lastY = -1f
+        prevX = -1f
+        prevY = -1f
+        lastPointTime = 0L
         invalidate()
     }
 
