@@ -145,13 +145,13 @@ class KeyboardPanel(
             progress = prefs.getInt("hw_stroke", 3)
         }
         val speedLabel = TextView(context).apply {
-            text = "识别停顿（越大越从容，默认 1200ms）"
+            text = "换字停顿（越大越不易拆字，默认 700ms）"
             textSize = 12f
             setTextColor(Color.parseColor("#3A3F47"))
         }
         val speedSeek = SeekBar(context).apply {
-            max = 30 // 300 ~ 3300 ms
-            progress = prefs.getInt("hw_speed", 9)
+            max = 18 // 200 ~ 2000 ms
+            progress = prefs.getInt("hw_speed", 5)
         }
         val btnDoneSettings = Button(context).apply {
             text = "完成"
@@ -177,7 +177,7 @@ class KeyboardPanel(
         })
         speedSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, v: Int, fromUser: Boolean) {
-                handwriteView.autoRecognizeDelayMs = 300L + v * 100L
+                handwriteView.autoRecognizeDelayMs = 200L + v * 100L
                 prefs.edit().putInt("hw_speed", v).apply()
             }
             override fun onStartTrackingTouch(sb: SeekBar?) {}
@@ -251,10 +251,11 @@ class KeyboardPanel(
             layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, dp(240))
             visibility = GONE
             recognizer = handwriteRecognizer
-            autoRecognizeDelayMs = 300L + prefs.getInt("hw_speed", 9) * 100L
+            autoRecognizeDelayMs = 200L + prefs.getInt("hw_speed", 5) * 100L
             displayStrokeWidth = (prefs.getInt("hw_stroke", 3) + 1) * resources.displayMetrics.density
             candidateCount = 9
-            onResult = { candidates -> showCandidates(candidates) }
+            onResult = { candidates, commit -> showCandidates(candidates, commit) }
+            onPreviewDismiss = { showHighFrequencyCandidates() }
             onAutoCommitPending = {
                 // 连续书写：落笔新字时，上一候选（首选）自动保留（已上屏），其余候选清空
                 hideCandidates()
@@ -512,28 +513,35 @@ class KeyboardPanel(
         setOnClickListener { onClick() }
     }
 
-    private fun showCandidates(raw: List<String>) {
+    /**
+     * @param commitFirst true=结算上一字（首选上屏、清屏）；false=抬笔后的快速预览（笔迹保留、可直接点选）
+     */
+    private fun showCandidates(raw: List<String>, commitFirst: Boolean = true) {
         if (raw.isEmpty()) return
         // 常用词共现重排：上一字 + 本候选能组成常用词时优先，近似“按语义联想”
         val ctx = previousChar
         val ranked = if (ctx == null) raw else raw.sortedWith(compareByDescending<String> { cand ->
             if (cand.length == 1 && "$ctx$cand" in commonBigrams) 10 else 0
         })
-        // 首选候选自动上屏（Gboard 连续书写体验），其余候选展示可替换
-        input.commit(ranked[0])
-        previousChar = ranked[0].firstOrNull()
-        committedCharCount = ranked[0].length
         candidateList.removeAllViews()
-        alternativeCandidates = ranked.drop(1).take(8) // 一行 7~8 个
+        if (commitFirst) {
+            input.commit(ranked[0])
+            previousChar = ranked[0].firstOrNull()
+            committedCharCount = ranked[0].length
+            alternativeCandidates = ranked.drop(1).take(8)
+        } else {
+            // 预览：8 个候选含首选，用户可立即点选，笔迹暂不清
+            committedCharCount = 0
+            alternativeCandidates = ranked.take(8)
+        }
         if (alternativeCandidates.isEmpty()) {
             showHighFrequencyCandidates()
-            handwriteView.clear()
+            if (commitFirst) handwriteView.clear()
             return
         }
         for (cand in alternativeCandidates) {
             candidateList.addView(candidateButton(cand) {
-                // 用所选候选替换刚上屏的字
-                repeat(committedCharCount) { input.backspace() }
+                if (committedCharCount > 0) repeat(committedCharCount) { input.backspace() }
                 input.commit(cand)
                 committedCharCount = cand.length
                 previousChar = cand.firstOrNull()
@@ -542,7 +550,7 @@ class KeyboardPanel(
             })
         }
         candidateStrip.visibility = VISIBLE
-        handwriteView.clear()
+        if (commitFirst) handwriteView.clear()
     }
 
     private fun hideCandidates() {

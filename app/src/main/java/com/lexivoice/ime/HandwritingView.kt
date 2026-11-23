@@ -29,11 +29,14 @@ class HandwritingView @JvmOverloads constructor(
 ) : View(context, attrs) {
 
     var recognizer: HCCRRecognizer? = null
-    var onResult: ((List<String>) -> Unit)? = null
+    /** 识别结果回调：commit=true 表示结算上一字（上屏+清屏），false 表示仅预览候选。 */
+    var onResult: ((List<String>, Boolean) -> Unit)? = null
     var onAutoCommitPending: (() -> Unit)? = null
+    /** 同一字继续书写（笔间隔短）时通知面板清掉旧预览。 */
+    var onPreviewDismiss: (() -> Unit)? = null
 
-    /** 停顿多久后识别（毫秒），对应“书写速度”，可调 300–3300ms。 */
-    var autoRecognizeDelayMs: Long = 1200L
+    /** 相邻两笔超过该间隔视为“新字”（毫秒），可调 200–2000ms。 */
+    var autoRecognizeDelayMs: Long = 700L
 
     /** 屏幕显示笔迹粗细（px）；识别图使用独立细笔迹。 */
     var displayStrokeWidth: Float = 8f
@@ -74,15 +77,20 @@ class HandwritingView @JvmOverloads constructor(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                // 【首笔粘连根治】只要画布上还有旧笔迹，落笔瞬间就同步结算上一字并清屏。
-                // 不能再等 1200ms 定时识别：用户连续书写时旧字会与新字叠加成"无关笔画"。
+                // 抬笔后 120ms 已给出候选预览；此处按笔间隔判断是"同字续写"还是"新字"
                 handler.removeCallbacksAndMessages(null)
                 if (paths.isNotEmpty()) {
-                    pendingRecognize = true
-                    recognize() // 同步识别：首选上屏 + 显示候选 + clear()
-                    // 识别失败（模型未就绪等）也必须清屏，绝不让旧笔迹留到新字里
-                    if (paths.isNotEmpty()) clear()
-                    pendingRecognize = false
+                    val gap = System.currentTimeMillis() - lastUpTime
+                    if (lastUpTime > 0 && gap >= autoRecognizeDelayMs) {
+                        // 间隔够长 = 上一字结束：同步结算并清屏，绝不让旧笔迹叠到新字
+                        pendingRecognize = true
+                        recognize(commit = true)
+                        if (paths.isNotEmpty()) clear()
+                        pendingRecognize = false
+                    } else {
+                        // 间隔短 = 同一个字继续写：保留笔迹，仅清掉旧预览候选
+                        onPreviewDismiss?.invoke()
+                    }
                 }
                 activePointerId = event.getPointerId(0)
                 val x = event.getX(0)
@@ -121,12 +129,12 @@ class HandwritingView @JvmOverloads constructor(
                 lastUpTime = System.currentTimeMillis()
                 invalidate()
                 handler.removeCallbacksAndMessages(null)
+                // 【快速反馈】抬笔 120ms 就识别并给出候选（笔迹保留，供对照点选）
                 handler.postDelayed({
-                    if (System.currentTimeMillis() - lastUpTime >= autoRecognizeDelayMs - 120) {
-                        pendingRecognize = true
-                        recognize()
+                    if (currentPath == null && paths.isNotEmpty()) {
+                        recognize(commit = false)
                     }
-                }, autoRecognizeDelayMs)
+                }, 120L)
                 return true
             }
         }
@@ -161,10 +169,10 @@ class HandwritingView @JvmOverloads constructor(
         if (paths.isEmpty()) return
         lastUpTime = System.currentTimeMillis()
         pendingRecognize = true
-        recognize()
+        recognize(commit = true)
     }
 
-    private fun recognize() {
+    private fun recognize(commit: Boolean) {
         val rec = recognizer ?: return
         if (paths.isEmpty()) return
 
@@ -216,7 +224,7 @@ class HandwritingView @JvmOverloads constructor(
         val results = rec.predict(floatInput, candidateCount)
         if (results.isEmpty()) return
         lastCandidates = results.map { it.text }
-        onResult?.invoke(lastCandidates)
+        onResult?.invoke(lastCandidates, commit)
     }
 
     fun applyStrokeWidth(widthPx: Float) {
