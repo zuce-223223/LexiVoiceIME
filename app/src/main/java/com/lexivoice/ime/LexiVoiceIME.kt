@@ -3,88 +3,78 @@ package com.lexivoice.ime
 import android.inputmethodservice.InputMethodService
 import android.view.KeyEvent
 import android.view.View
-import android.widget.Button
-import android.widget.TextView
+import com.shiyu.handwritten.runtime.HCCRRecognizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class LexiVoiceIME : InputMethodService() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var voiceManager: VoiceRecognitionManager
-    private var isRecording = false
+    private var handwriteRecognizer: HCCRRecognizer? = null
+    private var keyboardPanel: KeyboardPanel? = null
 
-    private var tvStatus: TextView? = null
-    private var btnRecord: Button? = null
-
-    override fun onCreate() {
-        super.onCreate()
-        voiceManager = VoiceRecognitionManager(applicationContext)
-    }
-
-    override fun onCreateInputView(): View {
-        val view = layoutInflater.inflate(R.layout.ime_keyboard_view, null)
-        tvStatus = view.findViewById(R.id.tv_ime_status)
-        btnRecord = view.findViewById(R.id.btn_voice_toggle)
-
-        tvStatus?.text = voiceManager.getModelStatusSummary()
-
-        btnRecord?.setOnClickListener {
-            if (!isRecording) {
-                startVoiceInput()
-            } else {
-                stopVoiceInputAndCommit()
-            }
+    private val inputBridge = object : KeyboardPanel.InputBridge {
+        override fun commit(text: String) {
+            currentInputConnection?.commitText(text, 1)
         }
 
-        view.findViewById<Button>(R.id.btn_space)?.setOnClickListener {
-            currentInputConnection?.commitText(" ", 1)
-        }
-
-        view.findViewById<Button>(R.id.btn_backspace)?.setOnClickListener {
-            val ic = currentInputConnection ?: return@setOnClickListener
+        override fun backspace() {
+            val ic = currentInputConnection ?: return
             ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL))
             ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL))
         }
 
-        view.findViewById<Button>(R.id.btn_enter)?.setOnClickListener {
-            val ic = currentInputConnection ?: return@setOnClickListener
+        override fun enter() {
+            val ic = currentInputConnection ?: return
             ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
             ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
         }
 
-        return view
-    }
-
-    private fun startVoiceInput() {
-        isRecording = true
-        btnRecord?.text = getString(R.string.btn_stop_voice)
-        voiceManager.startRecording(serviceScope) { status ->
-            tvStatus?.text = status
+        override fun status(text: String) {
+            keyboardPanel?.updateStatus(text)
         }
     }
 
-    private fun stopVoiceInputAndCommit() {
-        isRecording = false
-        btnRecord?.text = getString(R.string.btn_start_voice)
-        tvStatus?.text = getString(R.string.status_recognizing)
+    override fun onCreate() {
+        super.onCreate()
+        voiceManager = VoiceRecognitionManager(applicationContext)
+        loadHandwritingModel()
+    }
 
-        serviceScope.launch {
-            val recognizedText = voiceManager.stopRecordingAndRecognize { status ->
-                tvStatus?.text = status
+    private fun loadHandwritingModel() {
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                HCCRRecognizer.loadNativeLibrary("hccr_jni")
+                val rec = HCCRRecognizer(
+                    assets,
+                    "mbv2_aug.int8.ncnn.param",
+                    "mbv2_aug.int8.ncnn.bin",
+                    "charset.json"
+                )
+                withContext(Dispatchers.Main) { handwriteRecognizer = rec }
+            } catch (e: Exception) {
+                android.util.Log.w("LexiVoiceIME", "手写模型加载失败：${e.message}")
             }
-            if (recognizedText.isNotEmpty()) {
-                currentInputConnection?.commitText(recognizedText, 1)
-            }
-            tvStatus?.text = voiceManager.getModelStatusSummary()
         }
+    }
+
+    override fun onCreateInputView(): View {
+        val panel = KeyboardPanel(this, inputBridge, voiceManager, handwriteRecognizer, serviceScope)
+        keyboardPanel = panel
+        return panel
     }
 
     override fun onDestroy() {
         voiceManager.release()
+        try {
+            handwriteRecognizer?.close()
+        } catch (_: Exception) {
+        }
         serviceScope.cancel()
         super.onDestroy()
     }

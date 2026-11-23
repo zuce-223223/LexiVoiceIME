@@ -22,22 +22,30 @@ jobs:
       - name: Verify project directories
         run: |
           mkdir -p app/libs
-          mkdir -p app/src/main/assets/sense-voice
-          ls -la app/libs app/src/main/assets/sense-voice
+          mkdir -p app/src/main/assets
+          ls -la app/libs app/src/main/assets
 
       - name: Download Sherpa-ONNX 1.12.29 Android AAR
         run: |
           curl -L --fail -o app/libs/sherpa-onnx-1.12.29.aar \
             https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.29/sherpa-onnx-1.12.29.aar
 
-      - name: Download SenseVoice INT8 offline model
+      - name: Download ncnn Android prebuilt (for handwriting JNI)
         run: |
-          curl -L --fail -o sense-voice.tar.bz2 \
-            https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2
-          tar -xjf sense-voice.tar.bz2
-          cp sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09/model.int8.onnx app/src/main/assets/sense-voice/
-          cp sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09/tokens.txt app/src/main/assets/sense-voice/
-          rm -rf sense-voice.tar.bz2 sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09
+          curl -L --fail --retry 3 -o ncnn-android.zip \
+            https://github.com/Tencent/ncnn/releases/download/20260113/ncnn-20260113-android.zip
+          mkdir -p ncnn-extract
+          unzip -q ncnn-android.zip -d ncnn-extract
+          echo "=== ncnn extracted layout ==="
+          find ncnn-extract -maxdepth 3 -type d | head -40
+          # 规整为 CMakeLists 期望的 third_party/ncnn-android/arm64-v8a/
+          SRC=$(find ncnn-extract -type d -name arm64-v8a | head -1)
+          echo "SRC=$SRC"
+          if [ -z "$SRC" ]; then echo "arm64-v8a dir not found"; find ncnn-extract -maxdepth 2 -type d; exit 1; fi
+          mkdir -p third_party/ncnn-android
+          cp -r "$SRC" third_party/ncnn-android/arm64-v8a
+          echo "=== normalized layout ==="
+          find third_party/ncnn-android/arm64-v8a -maxdepth 3 \( -name "ncnnConfig.cmake" -o -name "libncnn.a" -o -name "libncnn.so" \) | head
 
       - name: Setup Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
@@ -52,7 +60,7 @@ jobs:
               exit 0
             fi
             if [ "$i" -lt 3 ]; then
-              echo "Build attempt $i failed (transient dependency/rate-limit errors possible). Retrying in 60s..."
+              echo "Build attempt $i failed (transient dependency errors possible). Retrying in 60s..."
               sleep 60
             fi
           done
