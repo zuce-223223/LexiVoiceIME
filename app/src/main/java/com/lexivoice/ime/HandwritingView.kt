@@ -137,7 +137,7 @@ class HandwritingView @JvmOverloads constructor(
                     for (i in 0 until event.historySize) {
                         appendPoint(
                             event.getHistoricalX(idx, i), event.getHistoricalY(idx, i),
-                            event.getHistoricalEventTime(idx, i)
+                            event.getHistoricalEventTime(i)
                         )
                     }
                 }
