@@ -129,12 +129,15 @@ class HandwritingView @JvmOverloads constructor(
                 lastUpTime = System.currentTimeMillis()
                 invalidate()
                 handler.removeCallbacksAndMessages(null)
-                // 【快速反馈】抬笔 120ms 就识别并给出候选（笔迹保留，供对照点选）
+                // 【快速反馈】抬笔 120ms 出候选预览（笔迹保留供对照）
                 handler.postDelayed({
-                    if (currentPath == null && paths.isNotEmpty()) {
-                        recognize(commit = false)
-                    }
+                    if (currentPath == null && paths.isNotEmpty()) recognize(commit = false)
                 }, 120L)
+                // 【跟上节奏】约 450ms 内没有新落笔就自动把首选上屏，无需等写第二字或点选
+                val autoCommitMs = (autoRecognizeDelayMs * 0.6).toLong().coerceAtLeast(400L)
+                handler.postDelayed({
+                    if (currentPath == null && paths.isNotEmpty()) recognize(commit = true)
+                }, autoCommitMs)
                 return true
             }
         }

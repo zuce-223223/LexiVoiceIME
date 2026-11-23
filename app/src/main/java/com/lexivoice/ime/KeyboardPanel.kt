@@ -117,9 +117,11 @@ class KeyboardPanel(
 
         // ===== 手写候选条：紧贴状态栏，保证设置面板展开时仍可见 =====
         candidateStrip = HorizontalScrollView(context).apply {
+            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
             visibility = GONE
             setBackgroundColor(Color.parseColor("#E8F5E9"))
             isHorizontalScrollBarEnabled = false
+            isFillViewport = true
         }
         candidateList = LinearLayout(context).apply {
             orientation = HORIZONTAL
@@ -508,8 +510,13 @@ class KeyboardPanel(
         setBackgroundColor(Color.parseColor("#F4FAF5"))
         minHeight = 0
         minimumHeight = 0
-        layoutParams = LayoutParams(0, dp(40), 1f) // 8 个等宽平分一行，全部可见无需滚动
-        setPadding(dp(2), 0, dp(2), 0)
+        // Button 默认 minWidth≈64dp 会把 8 个按钮撑出屏幕（实际只看到 4 个），必须归零
+        minWidth = 0
+        minimumWidth = 0
+        isMinWidthIncludePadding = false
+        includeFontPadding = false
+        layoutParams = LayoutParams(0, dp(40), 1f) // 8 个等宽平分一行，全部可见
+        setPadding(dp(1), 0, dp(1), 0)
         setOnClickListener { onClick() }
     }
 
