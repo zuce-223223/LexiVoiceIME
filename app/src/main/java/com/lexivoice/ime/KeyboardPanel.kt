@@ -58,7 +58,7 @@ class KeyboardPanel(
 
     // ---------- 键盘主体 ----------
     private val rowsContainer: LinearLayout
-    private val handwriteView: HandwritingView
+    private lateinit var handwriteView: HandwritingView
     private val handwriteToolRow: LinearLayout
     private val candidateStrip: HorizontalScrollView
     private val candidateList: LinearLayout
@@ -501,7 +501,7 @@ class KeyboardPanel(
 
     fun updateRecognizer(rec: HCCRRecognizer?) {
         handwriteRecognizer = rec
-        handwriteView.recognizer = rec
+        if (this::handwriteView.isInitialized) handwriteView.recognizer = rec
     }
 
     private fun toggleClipboardRow() {

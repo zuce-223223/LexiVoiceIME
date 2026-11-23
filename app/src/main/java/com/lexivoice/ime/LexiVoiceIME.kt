@@ -21,6 +21,19 @@ class LexiVoiceIME : InputMethodService() {
     private var keyboardPanel: KeyboardPanel? = null
     private var clipboardManager: ClipboardManager? = null
 
+    /** 保留引用以便在 onDestroy 中正确注销。 */
+    private val clipChangedListener = ClipboardManager.OnPrimaryClipChangedListener {
+        try {
+            val clip = clipboardManager?.primaryClip
+            if (clip != null && clip.itemCount > 0) {
+                val text = clip.getItemAt(0)?.coerceToText(this)?.toString()
+                if (!text.isNullOrBlank()) keyboardPanel?.pushClipboardEntry(text)
+            }
+        } catch (_: Exception) {
+            // Android 10+ 非默认 IME 或后台限制时静默忽略
+        }
+    }
+
     private val inputBridge = object : KeyboardPanel.InputBridge {
         override fun commit(text: String) {
             currentInputConnection?.commitText(text, 1)
@@ -76,17 +89,7 @@ class LexiVoiceIME : InputMethodService() {
      */
     private fun setupClipboardListener() {
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
-        clipboardManager?.addPrimaryClipChangedListener {
-            try {
-                val clip = clipboardManager?.primaryClip ?: return@addPrimaryClipChangedListener
-                if (clip.itemCount > 0) {
-                    val text = clip.getItemAt(0)?.coerceToText(this)?.toString() ?: return@addPrimaryClipChangedListener
-                    keyboardPanel?.pushClipboardEntry(text)
-                }
-            } catch (_: Exception) {
-                // Android 10+ 非默认 IME 或后台限制时静默忽略
-            }
-        }
+        clipboardManager?.addPrimaryClipChangedListener(clipChangedListener)
     }
 
     override fun onCreateInputView(): View {
@@ -101,7 +104,7 @@ class LexiVoiceIME : InputMethodService() {
             handwriteRecognizer?.close()
         } catch (_: Exception) {
         }
-        clipboardManager?.removePrimaryClipChangedListener { }
+        clipboardManager?.removePrimaryClipChangedListener(clipChangedListener)
         serviceScope.cancel()
         super.onDestroy()
     }
