@@ -147,13 +147,13 @@ class KeyboardPanel(
             progress = prefs.getInt("hw_stroke", 3)
         }
         val speedLabel = TextView(context).apply {
-            text = "换字停顿（越大越不易拆字，默认 700ms）"
+            text = "上屏速度（越小越快；多笔字调大，默认 350ms）"
             textSize = 12f
             setTextColor(Color.parseColor("#3A3F47"))
         }
         val speedSeek = SeekBar(context).apply {
-            max = 18 // 200 ~ 2000 ms
-            progress = prefs.getInt("hw_speed", 5)
+            max = 18 // 150 ~ 1950 ms
+            progress = prefs.getInt("hw_speed", 2)
         }
         val btnDoneSettings = Button(context).apply {
             text = "完成"
@@ -179,7 +179,7 @@ class KeyboardPanel(
         })
         speedSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, v: Int, fromUser: Boolean) {
-                handwriteView.autoRecognizeDelayMs = 200L + v * 100L
+                handwriteView.autoRecognizeDelayMs = 150L + v * 100L
                 prefs.edit().putInt("hw_speed", v).apply()
             }
             override fun onStartTrackingTouch(sb: SeekBar?) {}
@@ -253,7 +253,7 @@ class KeyboardPanel(
             layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, dp(240))
             visibility = GONE
             recognizer = handwriteRecognizer
-            autoRecognizeDelayMs = 200L + prefs.getInt("hw_speed", 5) * 100L
+            autoRecognizeDelayMs = 150L + prefs.getInt("hw_speed", 2) * 100L
             displayStrokeWidth = (prefs.getInt("hw_stroke", 3) + 1) * resources.displayMetrics.density
             candidateCount = 9
             onResult = { candidates, commit -> showCandidates(candidates, commit) }
@@ -513,7 +513,6 @@ class KeyboardPanel(
         // Button 默认 minWidth≈64dp 会把 8 个按钮撑出屏幕（实际只看到 4 个），必须归零
         minWidth = 0
         minimumWidth = 0
-        isMinWidthIncludePadding = false
         includeFontPadding = false
         layoutParams = LayoutParams(0, dp(40), 1f) // 8 个等宽平分一行，全部可见
         setPadding(dp(1), 0, dp(1), 0)

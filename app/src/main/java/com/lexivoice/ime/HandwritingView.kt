@@ -35,8 +35,8 @@ class HandwritingView @JvmOverloads constructor(
     /** 同一字继续书写（笔间隔短）时通知面板清掉旧预览。 */
     var onPreviewDismiss: (() -> Unit)? = null
 
-    /** 相邻两笔超过该间隔视为“新字”（毫秒），可调 200–2000ms。 */
-    var autoRecognizeDelayMs: Long = 700L
+    /** 抬笔后多久判定“本字写完”：既用于自动上屏，也用于下一笔是否算新字。可调 150–2000ms。 */
+    var autoRecognizeDelayMs: Long = 350L
 
     /** 屏幕显示笔迹粗细（px）；识别图使用独立细笔迹。 */
     var displayStrokeWidth: Float = 8f
@@ -129,15 +129,16 @@ class HandwritingView @JvmOverloads constructor(
                 lastUpTime = System.currentTimeMillis()
                 invalidate()
                 handler.removeCallbacksAndMessages(null)
-                // 【快速反馈】抬笔 120ms 出候选预览（笔迹保留供对照）
+                // 【快速反馈】抬笔 100ms 出候选预览（笔迹保留供对照）
                 handler.postDelayed({
                     if (currentPath == null && paths.isNotEmpty()) recognize(commit = false)
-                }, 120L)
-                // 【跟上节奏】约 450ms 内没有新落笔就自动把首选上屏，无需等写第二字或点选
-                val autoCommitMs = (autoRecognizeDelayMs * 0.6).toLong().coerceAtLeast(400L)
+                }, 100L)
+                // 【自动上屏】抬笔满 autoRecognizeDelayMs 仍无新落笔 = 本字写完，首选自动上屏。
+                // 与 ACTION_DOWN 的“同字续写”判断用同一阈值，逻辑自洽：
+                // 多笔字各笔间隔 < 阈值时落笔会取消本定时器并续写同一字，不会中途上屏。
                 handler.postDelayed({
                     if (currentPath == null && paths.isNotEmpty()) recognize(commit = true)
-                }, autoCommitMs)
+                }, autoRecognizeDelayMs)
                 return true
             }
         }
