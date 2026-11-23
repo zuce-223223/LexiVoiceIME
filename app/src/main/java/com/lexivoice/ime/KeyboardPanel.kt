@@ -6,10 +6,10 @@ import android.graphics.Typeface
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
-import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.shiyu.handwritten.runtime.HCCRRecognizer
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
